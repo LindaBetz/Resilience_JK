@@ -43,7 +43,7 @@ library(dplyr)
 # Für 2) input: task & mlr learner, output: residuen
 # 2) Mittels ML: ein ML Model aufstellen in welchem durch Prädiktoren (z.B. Env. Risk Faktoren) eine Variable (Functioning) prädiziert wird, dann die Residuen ausgeben.
 
-GetResidualsML <- function(task, learner, cv_folds, cv_reps) {
+GetResidualsML <- function(task, learner, cv_folds, cv_reps, par_set, optimization_strategy) {
   # some initial checks
   if (learner$type != "regr")
     stop("Error: Learner type must be 'regression'.")
@@ -64,8 +64,17 @@ GetResidualsML <- function(task, learner, cv_folds, cv_reps) {
     rdesc <- mlr::makeResampleDesc("CV", iters = cv_folds)
   }
   
+  lrn <- mlr::makeTuneWrapper(learner, control = ctrl,
+                        measures = list(mae), 
+                        resampling = rdesc, 
+                        par.set = par_set, 
+                        show.info = FALSE)
   resampled_models <-
-    mlr::resample(learner, task, rdesc, models = TRUE, show.info = FALSE)
+    mlr::resample(lrn, task = task, 
+                  resampling = rdesc, 
+                  extract = getTuneResult, 
+                  show.info = FALSE)
+  
   
   predictions <- getRRPredictions(resampled_models)$data
   
@@ -81,16 +90,21 @@ GetResidualsML <- function(task, learner, cv_folds, cv_reps) {
 # some test data
 data(BostonHousing, package = "mlbench")
 regr.lrn <-
-  mlr::makeLearner("regr.gbm", par.vals = list(n.trees = 1000, interaction.depth = 5))
+  mlr::makeLearner("regr.gbm")
 regr.task <-
   mlr::makeRegrTask(id = "bh", data = BostonHousing, target = "medv")
 task <- regr.task
 learner <- regr.lrn
-
+ctrl <- mlr::makeTuneControlRandom(maxit=100)
+ps <- makeParamSet(
+  makeIntegerParam("n.trees", lower = 100, upper = 1000)
+)
 
 GetResidualsML(
   task = regr.task,
   learner = regr.lrn,
   cv_folds = 2,
-  cv_reps = 0
+  cv_reps = 0,
+  par_set = ps,
+  optimization_strategy = ctrl
 )
