@@ -64,7 +64,6 @@ GetResidualsML <-
     # cv_reps: number of repititons in rep. cv; set to 0 for cv w/o reps
     # par_set: mlr hyperparameter set (to be tuned)
     # optimization_strategy: mlr tune control
-    
     # """
     if (learner$type != "regr")
       stop("Error: Learner type must be 'regression'.")
