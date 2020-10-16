@@ -1,3 +1,6 @@
+library(dplyr)
+
+
 # Hier wollen wir ja immer einen linear Zusammenhang darstellen (CTQ ~ GAF) und dann die Residuen berechnen.
 # 1) mittels PCA: einmal PCA mit allen Indikatoren für e.g. Env. Risk und eine PCA mit allen Indikatoren für Functioning.
 # Dann jeweils die erste Komponente mit einander korrelieren und die Residuen ausgeben.
@@ -5,7 +8,10 @@
 
 
 GetResidualsPCA <- function(input_risk, input_functioning) {
-  # some initial checks
+  # """
+  # input_risk: the matrix/dataframe with the risk variables 
+  # input_functioning: the matrix/dataframe with the functioning/outcome variables
+  # """
   if ((!is.data.frame(input_risk) &
        !is.matrix(input_risk)) |
       (!is.data.frame(input_functioning) &
@@ -13,6 +19,10 @@ GetResidualsPCA <- function(input_risk, input_functioning) {
     stop("Error: Input(s) are not in correct format (matrix or dataframe).")
   if (nrow(input_risk) != nrow(input_functioning))
     stop("Error: Different number of participants in input files. Please check.")
+  if (any(apply(input_risk, 2, is.numeric)) == FALSE)
+    stop("Not all variables in 'input_risk' are numeric. Please check.")
+  if (any(apply(input_functioning, 2, is.numeric)) == FALSE)
+    stop("Not all variables in 'input_functioning' are numeric. Please check.")
   if (nrow(input_risk) < ncol(input_risk))
     message("There are fewier observations than variables. Results might be unstable.")
   
@@ -36,56 +46,73 @@ test_1 <- matrix(rnorm(1500), nrow = 150)
 test_2 <- matrix(rnorm(1500), nrow = 150)
 
 GetResidualsPCA(test_1, test_2)
-# works
 
-
-library(dplyr)
 # Für 2) input: task & mlr learner, output: residuen
 # 2) Mittels ML: ein ML Model aufstellen in welchem durch Prädiktoren (z.B. Env. Risk Faktoren) eine Variable (Functioning) prädiziert wird, dann die Residuen ausgeben.
 
-GetResidualsML <- function(task, learner, cv_folds, cv_reps, par_set, optimization_strategy) {
-  # some initial checks
-  if (learner$type != "regr")
-    stop("Error: Learner type must be 'regression'.")
-  if (learner$predict.type != "response")
-    stop("Error: Predict type must be 'response'.")
-  if (sum(task$task.desc$n.feat) > task$task.desc$size)
-    warning("Task with more features than observations given. Results might be unstable")
-  
-  # define resampling scheme
-  if (cv_folds <= 1) {
-    warning("Number of folds must be at least 2 for CV. Setting cv_folds to 5.")
-    cv_folds <- 5
+GetResidualsML <-
+  function(task,
+           learner,
+           cv_folds,
+           cv_reps,
+           par_set,
+           optimization_strategy) {
+    # """
+    # task: mlr regression task
+    # learner: mlr learner
+    # cv_folds: number of folds in cv
+    # cv_reps: number of repititons in rep. cv; set to 0 for cv w/o reps
+    # par_set: mlr hyperparameter set (to be tuned)
+    # optimization_strategy: mlr tune control
+    
+    # """
+    if (learner$type != "regr")
+      stop("Error: Learner type must be 'regression'.")
+    if (learner$predict.type != "response")
+      stop("Error: Predict type must be 'response'.")
+    if (sum(task$task.desc$n.feat) > task$task.desc$size)
+      warning("Task with more features than observations given. Results might be unstable")
+    
+    # define resampling scheme
+    if (cv_folds <= 1) {
+      warning("Number of folds must be at least 2 for CV. Setting cv_folds to 5.")
+      cv_folds <- 5
+    }
+    if (cv_reps > 1) {
+      rdesc <-
+        mlr::makeResampleDesc("RepCV", folds = cv_folds, reps = cv_reps)
+    } else {
+      rdesc <- mlr::makeResampleDesc("CV", iters = cv_folds)
+    }
+    
+    lrn <- mlr::makeTuneWrapper(
+      learner,
+      control = ctrl,
+      measures = list(mlr::mae),
+      resampling = rdesc,
+      par.set = par_set,
+      show.info = FALSE
+    )
+    resampled_models <-
+      mlr::resample(
+        lrn,
+        task = task,
+        resampling = rdesc,
+        extract = mlr::getTuneResult,
+        show.info = FALSE
+      )
+    
+    
+    predictions <- getRRPredictions(resampled_models)$data
+    
+    residuals <-
+      predictions %>% mutate(residuals = truth - response) %>%
+      group_by(id) %>%
+      summarize(residuals = mean(residuals))
+    
+    return(residuals)
+    
   }
-  if (cv_reps > 1) {
-    rdesc <-
-      mlr::makeResampleDesc("RepCV", folds = cv_folds, reps = cv_reps)
-  } else {
-    rdesc <- mlr::makeResampleDesc("CV", iters = cv_folds)
-  }
-  
-  lrn <- mlr::makeTuneWrapper(learner, control = ctrl,
-                        measures = list(mae), 
-                        resampling = rdesc, 
-                        par.set = par_set, 
-                        show.info = FALSE)
-  resampled_models <-
-    mlr::resample(lrn, task = task, 
-                  resampling = rdesc, 
-                  extract = getTuneResult, 
-                  show.info = FALSE)
-  
-  
-  predictions <- getRRPredictions(resampled_models)$data
-  
-  residuals <-
-    predictions %>% mutate(residuals = truth - response) %>%
-    group_by(id) %>%
-    summarize(residuals = mean(residuals))
-  
-  return(residuals)
-  
-}
 
 # some test data
 data(BostonHousing, package = "mlbench")
@@ -95,16 +122,14 @@ regr.task <-
   mlr::makeRegrTask(id = "bh", data = BostonHousing, target = "medv")
 task <- regr.task
 learner <- regr.lrn
-ctrl <- mlr::makeTuneControlRandom(maxit=100)
-ps <- makeParamSet(
-  makeIntegerParam("n.trees", lower = 100, upper = 1000)
-)
+ctrl <- mlr::makeTuneControlRandom(maxit = 100)
+ps <- mlr::makeParamSet(makeIntegerParam("n.trees", lower = 100, upper = 1000))
 
 GetResidualsML(
   task = regr.task,
   learner = regr.lrn,
   cv_folds = 2,
-  cv_reps = 0,
+  cv_reps = 2,
   par_set = ps,
   optimization_strategy = ctrl
 )
